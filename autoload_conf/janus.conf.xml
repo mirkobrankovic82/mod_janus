@@ -1,6 +1,12 @@
 <configuration name="janus.conf" description="Janus Endpoint">
   <settings>
     <param name="debug" value="false"/>
+    <!--
+      Dynamic Janus pod routing (Deployment/Rollout): expand {pod} to per-pod headless DNS.
+      When set, dial strings like janus/my-pod-xyz/Agent@room lazily create server entries.
+    -->
+    <!-- <param name="pod-url-template" value="http://{pod}.janus-headless.example.svc.cluster.local:8088/janus"/> -->
+    <!-- <param name="pod-server-max" value="64"/> -->
   </settings>
 
   <!--
