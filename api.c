@@ -975,7 +975,8 @@ janus_id_t apiCreateRoom(server_t *pServer, const janus_id_t serverId,
 
 switch_status_t apiJoin(server_t *pServer, int hmacTokenTtl,
 		const janus_id_t serverId, const janus_id_t senderId, const janus_id_t roomId,
-		const char *pDisplay, const char *pPin, const char *pToken, const char *callId, const char *pRoomIdStr) {
+		const char *pDisplay, const char *pPin, const char *pToken, const char *callId, const char *pRoomIdStr,
+		const char *pCodec) {
 	message_t request, *pResponse = NULL;
  	switch_status_t result = SWITCH_STATUS_SUCCESS;
 
@@ -1063,6 +1064,19 @@ switch_status_t apiJoin(server_t *pServer, int hmacTokenTtl,
 	if (pDisplay) {
 		if (cJSON_AddStringToObject(request.pJsonBody, "display", pDisplay) == NULL) {
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Cannot create string (body.display)\n");
+			result = SWITCH_STATUS_FALSE;
+			goto done;
+		}
+	}
+
+	/*
+	 * AudioBridge fixes the participant codec at join time (it never infers it
+	 * from the SDP offer, defaulting to opus). Send the codec derived from the
+	 * channel's codec-string so the room can use pcma/pcmu/l16/l16-48 too.
+	 */
+	if (!zstr(pCodec)) {
+		if (cJSON_AddStringToObject(request.pJsonBody, "codec", pCodec) == NULL) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Cannot create string (body.codec)\n");
 			result = SWITCH_STATUS_FALSE;
 			goto done;
 		}

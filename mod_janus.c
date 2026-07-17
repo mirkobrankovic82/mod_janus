@@ -183,8 +183,17 @@ switch_status_t joined(janus_id_t serverId, janus_id_t senderId, janus_id_t room
 			switch_channel_set_variable(channel, "dtmf_type", partner_dtmf_type);
 			switch_channel_set_variable(channel, "absolute_codec_string", switch_channel_get_variable(partner_channel, partner_codec));
 		} else {
-			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "Using codec from janus.conf.xml: %s\n", pServer->codec_string);
-			switch_channel_set_variable(channel, "absolute_codec_string", pServer->codec_string);
+			// Honour a codec-string set by the dialplan/conductor (aligned with
+			// the normal FreeSWITCH path); only fall back to janus.conf.xml when
+			// the channel doesn't carry one. This must match the codec sent on
+			// the AudioBridge join in channel_on_routing.
+			const char *existing_codec = switch_channel_get_variable(channel, "absolute_codec_string");
+			if (zstr(existing_codec)) {
+				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "Using codec from janus.conf.xml: %s\n", pServer->codec_string);
+				switch_channel_set_variable(channel, "absolute_codec_string", pServer->codec_string);
+			} else {
+				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "Using codec from channel: %s\n", existing_codec);
+			}
 		}
 		switch_core_session_rwunlock(partner_session);
 	} else if (switch_channel_var_true(channel, "janus-use-bridged-channel-codec")) {
@@ -196,6 +205,13 @@ switch_status_t joined(janus_id_t serverId, janus_id_t senderId, janus_id_t room
 
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "Using default DTMF Type: rfc2833 \n");
 		switch_channel_set_variable(channel, "dtmf_type", "rfc2833");
+	}
+
+	// Constrain the SDP offer to a defined codec set so it matches the codec
+	// sent on the AudioBridge join (channel_on_routing). Without a codec-string
+	// from the dialplan/conductor, fall back to the server's janus.conf.xml value.
+	if (zstr(switch_channel_get_variable(channel, "absolute_codec_string"))) {
+		switch_channel_set_variable(channel, "absolute_codec_string", pServer->codec_string);
 	}
 
 	switch_core_media_prepare_codecs(session, SWITCH_TRUE);
@@ -845,6 +861,73 @@ static switch_status_t channel_on_init(switch_core_session_t *session)
 	return SWITCH_STATUS_SUCCESS;
 }
 
+/*
+ * Map a FreeSWITCH codec-string to the AudioBridge join "codec" name. Only the
+ * first (highest priority) codec is used, since AudioBridge negotiates a single
+ * codec per participant. Tokens look like "opus", "PCMA@8000h@20i" or
+ * "L16@48000h@20i@1c"; L16 needs a rate that matches the room sampling_rate
+ * (16000 -> "l16", 48000 -> "l16-48"). Returns SWITCH_TRUE when a supported
+ * codec was written to pOut, SWITCH_FALSE otherwise (caller omits the field,
+ * letting AudioBridge default to opus).
+ */
+static switch_bool_t januscodec_from_codec_string(const char *pCodecString, char *pOut, switch_size_t outLen) {
+	char first[64];
+	char *pAt;
+	const char *pName;
+
+	if (zstr(pCodecString) || !pOut || outLen == 0) {
+		return SWITCH_FALSE;
+	}
+
+	/* Take the first comma-separated token, e.g. "L16@48000h@20i@1c". */
+	(void) switch_copy_string(first, pCodecString, sizeof(first));
+	{
+		char *pComma = strchr(first, ',');
+		if (pComma) {
+			*pComma = '\0';
+		}
+	}
+
+	/* Split the codec name from its @rate/@ptime attributes. */
+	pAt = strchr(first, '@');
+	if (pAt) {
+		*pAt = '\0';
+	}
+	pName = first;
+
+	if (!strcasecmp(pName, "opus")) {
+		(void) switch_copy_string(pOut, "opus", outLen);
+		return SWITCH_TRUE;
+	}
+	if (!strcasecmp(pName, "PCMA")) {
+		(void) switch_copy_string(pOut, "pcma", outLen);
+		return SWITCH_TRUE;
+	}
+	if (!strcasecmp(pName, "PCMU")) {
+		(void) switch_copy_string(pOut, "pcmu", outLen);
+		return SWITCH_TRUE;
+	}
+	if (!strcasecmp(pName, "L16")) {
+		/* AudioBridge accepts L16 only at 16000 ("l16") or 48000 ("l16-48"). */
+		int rate = pAt ? atoi(pAt + 1) : 0;
+		if (rate == 16000) {
+			(void) switch_copy_string(pOut, "l16", outLen);
+			return SWITCH_TRUE;
+		}
+		if (rate == 48000) {
+			(void) switch_copy_string(pOut, "l16-48", outLen);
+			return SWITCH_TRUE;
+		}
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+				"L16 codec requires @16000 or @48000 for Janus AudioBridge; got %s\n", pCodecString);
+		return SWITCH_FALSE;
+	}
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+			"Codec %s has no AudioBridge mapping; letting Janus default to opus\n", pName);
+	return SWITCH_FALSE;
+}
+
 static switch_status_t channel_on_routing(switch_core_session_t *session)
 {
 	switch_channel_t *channel = NULL;
@@ -898,6 +981,20 @@ static switch_status_t channel_on_routing(switch_core_session_t *session)
 		}
 	}
 
+	/*
+	 * Derive the AudioBridge join codec from the channel's codec-string (set by
+	 * the dialplan/conductor), falling back to the server's configured
+	 * codec-string. This must be decided here at join time (the SDP offer is
+	 * generated later in joined()); joined() keeps absolute_codec_string
+	 * consistent so the offered codec matches what we join with.
+	 */
+	const char *pCodecString = switch_channel_get_variable(channel, "absolute_codec_string");
+	if (zstr(pCodecString)) {
+		pCodecString = pServer->codec_string;
+	}
+	char januscodec[32] = "";
+	(void) januscodec_from_codec_string(pCodecString, januscodec, sizeof(januscodec));
+
 	if (apiJoin(
 				pServer,
 				hmacTokenTtl,
@@ -908,7 +1005,8 @@ static switch_status_t channel_on_routing(switch_core_session_t *session)
 				switch_channel_get_variable(channel, "janus-room-pin"),
 				switch_channel_get_variable(channel, "janus-user-token"),
 				tech_pvt->callId,
-				tech_pvt->pRoomIdStr) != SWITCH_STATUS_SUCCESS) {
+				tech_pvt->pRoomIdStr,
+				januscodec) != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Failed to join room\n");
 		switch_channel_hangup(channel, SWITCH_CAUSE_INCOMPATIBLE_DESTINATION);
 		return SWITCH_STATUS_FALSE;
