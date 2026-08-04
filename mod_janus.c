@@ -1012,10 +1012,12 @@ static switch_status_t channel_on_hangup(switch_core_session_t *session)
 		// carry on regardless
 	}
 
-	/* AudioBridge does not auto-destroy empty rooms — tear down explicitly while the handle is still attached. */
-	if (apiDestroyRoom(pServer, tech_pvt->serverId, tech_pvt->senderId, tech_pvt->roomId, tech_pvt->pRoomIdStr) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Failed to destroy room\n");
-		// carry on regardless
+	/* AudioBridge does not auto-destroy empty rooms. Opt in via janus-room-destroy-on-hangup. */
+	if (switch_channel_var_true(channel, "janus-room-destroy-on-hangup")) {
+		if (apiDestroyRoom(pServer, tech_pvt->serverId, tech_pvt->senderId, tech_pvt->roomId, tech_pvt->pRoomIdStr) != SWITCH_STATUS_SUCCESS) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Failed to destroy room\n");
+			// carry on regardless
+		}
 	}
 
 	if (apiDetach(pServer, tech_pvt->serverId, tech_pvt->senderId) != SWITCH_STATUS_SUCCESS) {
