@@ -1320,6 +1320,119 @@ switch_status_t apiLeave(server_t *pServer, const janus_id_t serverId, const jan
 	return result;
 }
 
+switch_status_t apiDestroyRoom(server_t *pServer, const janus_id_t serverId, const janus_id_t senderId,
+		const janus_id_t roomId, const char *pRoomIdStr) {
+	message_t request, *pResponse = NULL;
+	switch_status_t result = SWITCH_STATUS_SUCCESS;
+
+	cJSON *pJsonRequest = NULL;
+	cJSON *pJsonResponse = NULL;
+	cJSON *pJsonRspResult;
+	cJSON *pJsonRspErrorCode;
+	char *pTransactionId = generateTransactionId();
+
+	switch_assert(pServer);
+	switch_assert(pServer->pUrl);
+
+	/* AudioBridge rooms are not auto-destroyed when empty; tear them down explicitly. */
+	(void) memset((void *) &request, 0, sizeof(request));
+	request.pType = "message";
+	request.serverId = serverId;
+	request.pTransactionId = pTransactionId;
+	request.pSecret = pServer->pSecret;
+	request.pHmacSecret = pServer->pHmacSecret;
+
+	request.pJsonBody = cJSON_CreateObject();
+	if (request.pJsonBody == NULL) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Cannot create body\n");
+		result = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+
+	if (cJSON_AddStringToObject(request.pJsonBody, "request", "destroy") == NULL) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Cannot create string (body.request)\n");
+		result = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+
+	if (pRoomIdStr && *pRoomIdStr) {
+		if (cJSON_AddStringToObject(request.pJsonBody, "room", pRoomIdStr) == NULL) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Cannot create string (body.room)\n");
+			result = SWITCH_STATUS_FALSE;
+			goto done;
+		}
+	} else {
+		if (cJSON_AddNumberToObject(request.pJsonBody, "room", roomId) == NULL) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Cannot create number (body.room)\n");
+			result = SWITCH_STATUS_FALSE;
+			goto done;
+		}
+	}
+
+	if (cJSON_AddBoolToObject(request.pJsonBody, "permanent", cJSON_False) == NULL) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Cannot create boolean (body.permanent)\n");
+		result = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+
+	if (!(pJsonRequest = encode(request))) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Cannot create request\n");
+		result = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+
+	pJsonResponse = api_send_request(pServer, pJsonRequest, pTransactionId, serverId, senderId, URL_HANDLE, "destroy room");
+
+	if (!(pResponse = decode(pJsonResponse))) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Invalid response\n");
+		result = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+
+	if (!pResponse->pType || strcmp("success", pResponse->pType) ||
+			!pResponse->pTransactionId || strcmp(pTransactionId, pResponse->pTransactionId) ||
+			(pResponse->senderId != senderId) || !pResponse->pJsonBody) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Value mismatch\n");
+		result = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+
+	pJsonRspResult = cJSON_GetObjectItemCaseSensitive(pResponse->pJsonBody, "audiobridge");
+	if (!cJSON_IsString(pJsonRspResult)) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "No response (plugindata.data.audiobridge)\n");
+		result = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+
+	if (!strcmp("destroyed", pJsonRspResult->valuestring)) {
+		MOD_JANUS_DBG(SWITCH_CHANNEL_LOG, "Destroy room success\n");
+	} else if (!strcmp("event", pJsonRspResult->valuestring)) {
+		pJsonRspErrorCode = cJSON_GetObjectItemCaseSensitive(pResponse->pJsonBody, "error_code");
+		/* 426 = no such room — already gone (e.g. peer destroyed first). */
+		if (cJSON_IsNumber(pJsonRspErrorCode) && pJsonRspErrorCode->valueint == 426) {
+			MOD_JANUS_DBG(SWITCH_CHANNEL_LOG, "Destroy room: already gone\n");
+		} else {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+					"Destroy room failed (error_code)=%d\n",
+					cJSON_IsNumber(pJsonRspErrorCode) ? pJsonRspErrorCode->valueint : -1);
+			result = SWITCH_STATUS_FALSE;
+			goto done;
+		}
+	} else {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Invalid response (plugindata.data.audiobridge)\n");
+		result = SWITCH_STATUS_FALSE;
+		goto done;
+	}
+
+done:
+	cJSON_Delete(pJsonRequest);
+	cJSON_Delete(pJsonResponse);
+	switch_safe_free(pResponse);
+	switch_safe_free(pTransactionId);
+
+	return result;
+}
+
 switch_status_t apiDetach(server_t *pServer, const janus_id_t serverId, const janus_id_t senderId) {
 	message_t request, *pResponse = NULL;
 	switch_status_t result = SWITCH_STATUS_SUCCESS;

@@ -130,7 +130,7 @@ If called with the following dialstring (`{janus-use-existing-room=true}janus/de
 ```
 
 The following channel variables are defined:
-* janus-use-existing-room - By default the module will create the room, if this flag is set then the caller is joined to an existing room.
+* janus-use-existing-room - By default the module will create the room, if this flag is set then the caller is joined to an existing room. On hangup the module always sends AudioBridge `destroy` for the dialed room (best-effort); Janus does not auto-delete empty rooms.
 * janus-room-description - This is a textual description of the room specified in the *create* request to Janus (only applicable if janus-use-existing-room is false)
 * janus-room-record - The value is specified in the *create* request to Janus and indicates that the room mix should be recorded (only applicable if janus-use-existing-room is false).  The default value is not to record.
 * janus-room-record-file - This value specifies the file name to which the recording should be written.  It is passed in the *create* request to Janus (only applicable if janus-use-existing-room is false and  janus-room-record is true).  If omitted the default filename will be used.

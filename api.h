@@ -77,6 +77,9 @@ switch_status_t apiConfigure(server_t *pServer,
 	switch_bool_t record, const char *pRecordingFile,
 	const char *pType, const char *pSdp, const char *callId);
 switch_status_t apiLeave(server_t *pServer, const janus_id_t serverId, const janus_id_t senderId, const char *callId);
+/* Destroy an AudioBridge room (best-effort; missing room is success). Call while the handle is still attached. */
+switch_status_t apiDestroyRoom(server_t *pServer, const janus_id_t serverId, const janus_id_t senderId,
+	const janus_id_t roomId, const char *pRoomIdStr);
 switch_status_t apiDetach(server_t *pServer, const janus_id_t serverId, const janus_id_t senderId);
 switch_status_t apiPoll(server_t *pServer, const janus_id_t serverId,
 	switch_status_t (*pJoinedFunc)(const janus_id_t serverId, const janus_id_t senderId, const janus_id_t roomId, const janus_id_t participantId),
